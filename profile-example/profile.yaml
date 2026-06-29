@@ -1,0 +1,15 @@
+profileName: profile-example
+profileVersion: v1.0.0
+oeapi:
+  oeapiPath: ../base/oeapi
+  oeapiMinVersions: 
+    - v6.1
+    - v7.0
+
+# multiple consumers can be defined, each with their own consumerName and path, 
+# only one consumer can be returned in a request, based on the consumer provided 
+# in the request header
+
+consumers: 
+  - consumer-profile:
+      path: source/consumers/consumer-profile

@@ -1,0 +1,3 @@
+[submodule "base/oeapi"]
+	path = base/oeapi
+	url = https://github.com/open-education-api/specification.git

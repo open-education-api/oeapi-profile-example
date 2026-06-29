@@ -1,0 +1,11 @@
+# profile-example/source/schemas/Course.yaml
+
+required:
+  - courseId
+  - name
+  - primaryCode
+  - duration
+
+properties:
+  validFrom: null
+  validTo: null

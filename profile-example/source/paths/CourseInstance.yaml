@@ -1,0 +1,12 @@
+
+get:
+  parameters:
+    - name: expand
+      _delete: true
+  responses:
+    '200':
+      description: OK
+      content:
+        application/json:
+          schema:
+            $ref: '../schemas/Course.yaml'

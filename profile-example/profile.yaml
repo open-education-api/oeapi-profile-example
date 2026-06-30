@@ -1,5 +1,5 @@
 profileName: profile-example
-profileVersion: v1.0.0
+profileVersion: v1.0
 oeapi:
   oeapiPath: ../base/oeapi
   oeapiMinVersions: 
@@ -11,5 +11,5 @@ oeapi:
 # in the request header
 
 consumers: 
-  - name: consumer-example
+  - consumerName: consumer-example
     path: source/consumers/consumer-example

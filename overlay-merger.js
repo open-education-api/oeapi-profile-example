@@ -58,24 +58,19 @@ function readYaml(file) {
 }
 
 /**
- * Writes a YAML file and creates parent directories when needed.
+ * Reads a YAML file as document so comments and scalar style are preserved.
  */
-function writeYaml(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, YAML.stringify(cleanEmpty(data)));
+function readYamlDocument(file) {
+  if (!fs.existsSync(file)) throw new Error(`File not found: ${file}.`);
+  return YAML.parseDocument(fs.readFileSync(file, "utf8"), { keepSourceTokens: true });
 }
 
 /**
- * Removes empty objects and arrays.
+ * Writes a YAML document and creates parent directories when needed.
  */
-function cleanEmpty(value) {
-  if (Array.isArray(value)) return value.map(cleanEmpty);
-  if (!isObject(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, child]) => [key, cleanEmpty(child)])
-      .filter(([, child]) => !child || Object.keys(child).length > 0)
-  );
+function writeYamlDocument(file, document) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, String(document));
 }
 
 /**
@@ -98,24 +93,27 @@ function cleanEmpty(value) {
  * other arrays
  *   the overlay array replaces the base array
  */
-function merge(base, overlay) {
-  if (overlay === null) return undefined;
-  if (Array.isArray(base) && Array.isArray(overlay)) {
-    if (base.some(item => item?.name && item?.in) 
-       || overlay.some(item => item?.name && item?.in) 
-       ) return mergeParameters(base, overlay);
-    return overlay;
+function merge(base, overlay, document) {
+  if (overlay === undefined || overlay === null || overlay.value === null) return undefined;
+  if (YAML.isSeq(base) && YAML.isSeq(overlay)) {
+    if (base.items.some(item => YAML.isMap(item) && item.has("name") && item.has("in"))
+       || overlay.items.some(item => YAML.isMap(item) && item.has("name") && item.has("in"))
+       ) return mergeParameters(base, overlay, document);
+    base.items = overlay.items;
+    return base;
   }
-  if (isObject(base) && isObject(overlay)) {
-    if (Array.isArray(base.oneOf) && base.oneOf.length === 2 && base.oneOf.some(item => isObject(item) && item.type === "null")) return mergeNullableOneOf(base, overlay);
-    if (Array.isArray(base.allOf) && Object.keys(overlay).some(key => key !== "allOf" && key !== "oneOf" && key !== "anyOf")) return mergeObjectSchemaMembersIntoAllOf(base, overlay);
-    const result = { ...base };
-    for (const [key, value] of Object.entries(overlay)) {
-      const merged = merge(result[key], value);
-      if (merged === undefined) delete result[key];
-      else result[key] = merged;
+  if (YAML.isMap(base) && YAML.isMap(overlay)) {
+    const oneOf = base.get("oneOf", true);
+    const allOf = base.get("allOf", true);
+    if (YAML.isSeq(oneOf) && oneOf.items.length === 2 && oneOf.items.some(item => YAML.isMap(item) && item.get("type") === "null")) return mergeNullableOneOf(base, overlay, document);
+    if (YAML.isSeq(allOf) && overlay.items.some(item => !["allOf", "oneOf", "anyOf"].includes(item.key.value))) return mergeObjectSchemaMembersIntoAllOf(base, overlay, document);
+    for (const item of overlay.items) {
+      const key = item.key.value;
+      const merged = merge(base.get(key, true), item.value, document);
+      if (merged === undefined) base.delete(key);
+      else base.set(key, merged);
     }
-    return result;
+    return base;
   }
   return overlay;
 }
@@ -126,55 +124,63 @@ function merge(base, overlay) {
  * Parameters are matched by `name` and `in`
  * A parameter overlay with _delete: true removes the matching parameter.
  */
-function mergeParameters(base, overlay) {
-  const result = [...base];
-  for (const parameter of overlay) {
-    const index = result.findIndex(existing =>
-      existing?.name === parameter?.name &&
-      existing?.in === parameter?.in
+function mergeParameters(base, overlay, document) {
+  for (const parameter of overlay.items) {
+    const index = base.items.findIndex(existing =>
+      YAML.isMap(existing) && YAML.isMap(parameter) &&
+      existing.get("name") === parameter.get("name") &&
+      existing.get("in") === parameter.get("in")
     );
-    if (parameter?._delete === true) {
-      if (index >= 0) result.splice(index, 1);
-    } else if (index >= 0) result[index] = merge(result[index], parameter);
-      else result.push(parameter);
+    if (YAML.isMap(parameter) && parameter.get("_delete") === true) {
+      if (index >= 0) base.items.splice(index, 1);
+    } else if (index >= 0) base.items[index] = merge(base.items[index], parameter, document);
+      else base.items.push(parameter);
   }
-  return result;
+  return base;
 }
 
 /** comment missing */
-function mergeObjectSchemaMembersIntoAllOf(base, overlay) {
-  const result = { ...base, allOf: [...base.allOf] };
-  const objectOverlay = {};
-  const rootOverlay = {};
-  for (const [key, value] of Object.entries(overlay)) {
-    if (key !== "allOf" && key !== "oneOf" && key !== "anyOf") objectOverlay[key] = value;
-    else rootOverlay[key] = value;
+function mergeObjectSchemaMembersIntoAllOf(base, overlay, document) {
+  const allOf = base.get("allOf", true);
+  const objectOverlay = new YAML.YAMLMap();
+  const rootOverlay = new YAML.YAMLMap();
+  for (const item of overlay.items) {
+    if (!["allOf", "oneOf", "anyOf"].includes(item.key.value)) objectOverlay.items.push(item);
+    else rootOverlay.items.push(item);
   }
-  let index = result.allOf.findIndex(item => isObject(item) && !item.$ref && (item.type === "object" || isObject(item.properties) || Array.isArray(item.required)));
+  if (!objectOverlay.has("type")) objectOverlay.set("type", "object");
+  let index = allOf.items.findIndex(item => YAML.isMap(item) && !item.has("$ref") && (item.get("type") === "object" || YAML.isMap(item.get("properties", true)) || YAML.isSeq(item.get("required", true))));
   if (index < 0) {
-    index = result.allOf.length;
-    result.allOf.push({ type: "object" });
+    index = allOf.items.length;
+    allOf.items.push(document.createNode({ type: "object" }));
   }
-  const mergedObject = merge(result.allOf[index], { type: "object", ...objectOverlay });
-  if (mergedObject === undefined) result.allOf.splice(index, 1);
-  else result.allOf[index] = mergedObject;
-  return merge(result, rootOverlay);
+  const mergedObject = merge(allOf.items[index], objectOverlay, document);
+  if (mergedObject === undefined) allOf.items.splice(index, 1);
+  else allOf.items[index] = mergedObject;
+  return merge(base, rootOverlay, document);
 }
 
 /**
  * Merges an overlay into a nullable oneOf schema.
  */
-function mergeNullableOneOf(base, overlay) {
-  if (isObject(overlay) && Array.isArray(overlay.oneOf) && overlay.oneOf.length === 2 && overlay.oneOf.some(item => isObject(item) && item.type === "null")) {
-    const baseSchema = base.oneOf.find(item => !(isObject(item) && item.type === "null"));
-    const overlaySchema = overlay.oneOf.find(item => !(isObject(item) && item.type === "null"));
-    const nullSchema = overlay.oneOf.find(item => isObject(item) && item.type === "null") ?? base.oneOf.find(item => isObject(item) && item.type === "null");
-    return { ...base, ...overlay, oneOf: [mergeOneOfSchema(baseSchema, overlaySchema), nullSchema] };
+function mergeNullableOneOf(base, overlay, document) {
+  const baseOneOf = base.get("oneOf", true);
+  const overlayOneOf = overlay.get("oneOf", true);
+  if (YAML.isSeq(overlayOneOf) && overlayOneOf.items.length === 2 && overlayOneOf.items.some(item => YAML.isMap(item) && item.get("type") === "null")) {
+    const baseSchema = baseOneOf.items.find(item => !(YAML.isMap(item) && item.get("type") === "null"));
+    const overlaySchema = overlayOneOf.items.find(item => !(YAML.isMap(item) && item.get("type") === "null"));
+    const nullSchema = overlayOneOf.items.find(item => YAML.isMap(item) && item.get("type") === "null") ?? baseOneOf.items.find(item => YAML.isMap(item) && item.get("type") === "null");
+    for (const item of overlay.items) {
+      if (item.key.value !== "oneOf") base.set(item.key.value, item.value);
+    }
+    baseOneOf.items = [mergeOneOfSchema(baseSchema, overlaySchema, document), nullSchema];
+    return base;
   }
-  if (isObject(overlay) && !Array.isArray(overlay.oneOf)) {
-    const baseSchema = base.oneOf.find(item => !(isObject(item) && item.type === "null"));
-    const nullSchema = base.oneOf.find(item => isObject(item) && item.type === "null");
-    return { ...base, oneOf: [mergeOneOfSchema(baseSchema, overlay), nullSchema] };
+  if (!YAML.isSeq(overlayOneOf)) {
+    const baseSchema = baseOneOf.items.find(item => !(YAML.isMap(item) && item.get("type") === "null"));
+    const nullSchema = baseOneOf.items.find(item => YAML.isMap(item) && item.get("type") === "null");
+    baseOneOf.items = [mergeOneOfSchema(baseSchema, overlay, document), nullSchema];
+    return base;
   }
   return overlay;
 }
@@ -182,17 +188,19 @@ function mergeNullableOneOf(base, overlay) {
 /**
  * Merges the non-null branch of a nullable oneOf schema.
  */
-function mergeOneOfSchema(base, overlay) {
-  if (isObject(overlay) && (Array.isArray(overlay.allOf) || Array.isArray(overlay.oneOf) || Array.isArray(overlay.anyOf))) return overlay;
-  if (isObject(base) && base.$ref && isObject(overlay)) return { allOf: [base, { type: "object", ...overlay }] };
-  return merge(base, overlay);
-}
-
-/**
- * Determines whether a value is a plain object.
- */
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function mergeOneOfSchema(base, overlay, document) {
+  if (YAML.isMap(overlay) && (YAML.isSeq(overlay.get("allOf", true)) || YAML.isSeq(overlay.get("oneOf", true)) || YAML.isSeq(overlay.get("anyOf", true)))) return overlay;
+  if (YAML.isMap(base) && base.has("$ref") && YAML.isMap(overlay)) {
+    const objectOverlay = new YAML.YAMLMap();
+    const result = new YAML.YAMLMap();
+    const allOf = new YAML.YAMLSeq();
+    objectOverlay.set("type", "object");
+    for (const item of overlay.items) objectOverlay.items.push(item);
+    allOf.items.push(base, objectOverlay);
+    result.set("allOf", allOf);
+    return result;
+  }
+  return merge(base, overlay, document);
 }
 
 const fs = require("node:fs");
@@ -251,15 +259,16 @@ fs.cpSync(oeapiDir, generatedDir, { recursive: true });
 for (const relativeFile of fs.globSync("**/*.{yaml,yml}", { cwd: profileSourceDir })) {
   const overlayFile = path.join(profileSourceDir, relativeFile);
   const targetFile = path.join(generatedDir, relativeFile);
-  const overlay = readYaml(overlayFile);
   if (!fs.existsSync(targetFile)) {         // If the file is new, add it to generated/.
     console.log(`Adding new file ${relativeFile}`);
-    writeYaml(targetFile, overlay);
+    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fs.copyFileSync(overlayFile, targetFile);
   } else {                                  // If the file already exists, merge the overlay into the generated file.
-    const base = readYaml(targetFile);
-    const merged = merge(base, overlay);
+    const overlay = readYamlDocument(overlayFile);
+    const target = readYamlDocument(targetFile);
+    merge(target.contents, overlay.contents, target);
     console.log(`Merging file ${relativeFile}`);
-    writeYaml(targetFile, merged);
+    writeYamlDocument(targetFile, target);
   }
 }
 
@@ -271,12 +280,20 @@ for (const relativeFile of fs.globSync("**/*.{yaml,yml}", { cwd: profileSourceDi
  * profile-specific metadata.
  */
 const generatedSpecFile = path.join(generatedDir, "spec.yaml");
-const generatedSpec = readYaml(generatedSpecFile);
-generatedSpec.info ??= {};
-generatedSpec.info["x-profile-name"] = profile.profileName;
-generatedSpec.info["x-profile-version"] = profile.profileVersion;
-generatedSpec.info["x-oeapi-min-versions"] = profile.oeapi.oeapiMinVersions ?? [];
-generatedSpec.info["x-consumers"] = profile.consumers ?? [];
+const generatedSpec = readYamlDocument(generatedSpecFile);
+let info = generatedSpec.contents.get("info", true);
+if (!YAML.isMap(info)) {
+  info = new YAML.YAMLMap();
+  generatedSpec.contents.set("info", info);
+}
+info.set("x-profile", generatedSpec.createNode({
+  profileName: profile.profileName,
+  profileVersion: profile.profileVersion,
+  oeapiMinVersions: profile.oeapi.oeapiMinVersions ?? [],
+  consumers: (profile.consumers ?? []).map(consumer =>
+    readYaml(path.join(profileDir, consumer.path, "consumer.yaml"))
+  )
+}));
 console.log(`Adding info to ${generatedSpecFile}`);
-writeYaml(generatedSpecFile, generatedSpec);
+writeYamlDocument(generatedSpecFile, generatedSpec);
 console.log(`Specification tree written to ${generatedDir}.`);

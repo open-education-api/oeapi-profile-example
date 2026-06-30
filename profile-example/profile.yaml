@@ -11,5 +11,5 @@ oeapi:
 # in the request header
 
 consumers: 
-  - consumer-profile:
-      path: source/consumers/consumer-profile
+  - name: consumer-example
+    path: source/consumers/consumer-example

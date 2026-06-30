@@ -1,4 +1,5 @@
 properties:
   consumer:
       allOf:
+        - $ref: './Consumer.yaml'
         - $ref: '../consumers/consumer-example/CourseConsumerExample.yaml'

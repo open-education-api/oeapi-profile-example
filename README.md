@@ -345,7 +345,7 @@ Setting `_delete: true` removes an item from an array, such as a parameter.
 
 ## Generated metadata
 
-During generation, profile and consumer metadata is added to the generated specification.
+During generation, profile and consumer metadata is added to the generated specification (spec.yaml).
 
 Example:
 
@@ -365,7 +365,7 @@ x-profile:
         - v7.0
 ```
 
-This makes it clear which profile, consumer and OEAPI versions were used to generate the specification.
+This makes it clear which profile, consumer and OEAPI versions are used in the specification.
 
 ## Generate the specification
 
